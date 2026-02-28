@@ -24,12 +24,12 @@ use std::{
 };
 use thiserror::Error;
 
-// ── constants ─────────────────────────────────────────────────────────────────
+// constants
 
 /// Maximum upload size per part (256 MiB).
 pub const MAX_UPLOAD: u64 = 256 * 1024 * 1024;
 
-// ── shared state ──────────────────────────────────────────────────────────────
+// shared state
 
 /// One entry per `name` key.
 #[derive(Default, Clone)]
@@ -40,7 +40,7 @@ struct Entry {
 
 pub(crate) type Store = Arc<RwLock<HashMap<String, Entry>>>;
 
-// ── error type ────────────────────────────────────────────────────────────────
+// error type
 
 #[derive(Debug, Error)]
 enum ApiError {
@@ -80,7 +80,7 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for ApiError {
     }
 }
 
-// ── routes ────────────────────────────────────────────────────────────────────
+// routes
 
 /// GET /health — liveness probe
 #[get("/health")]
@@ -144,7 +144,7 @@ async fn read(
     Ok((Status::Ok, (ContentType::Binary, merged)))
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// helpers
 
 /// Read the request body up to `MAX_UPLOAD` bytes.
 async fn read_body(data: Data<'_>) -> Result<Vec<u8>, ApiError> {
@@ -161,7 +161,7 @@ async fn read_body(data: Data<'_>) -> Result<Vec<u8>, ApiError> {
         })
 }
 
-// ── build ─────────────────────────────────────────────────────────────────────
+// build
 
 /// Build the configured Rocket instance.  Called by `main` and by tests.
 pub fn build_rocket() -> rocket::Rocket<rocket::Build> {

@@ -9,7 +9,7 @@ use netcdf_sys::*;
 use std::ffi::{CStr, CString};
 use thiserror::Error;
 
-// ── in-memory FFI not yet exposed by netcdf-sys 0.3.x ────────────────────────
+// in-memory FFI — not in netcdf-sys 0.3 bindings but present in libnetcdf >= 4.6
 // These symbols exist in libnetcdf >= 4.6 but netcdf-sys 0.3 does not bind them.
 // Declaring them here is safe because the crate already links against libnetcdf.
 
@@ -44,7 +44,7 @@ extern "C" {
 /// race with server-side merges.
 pub static NC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// ── error type ───────────────────────────────────────────────────────────────
+// error type
 
 #[derive(Debug, Error)]
 pub enum MergeError {
@@ -74,7 +74,7 @@ impl MergeError {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// helpers
 
 /// Unwrap a netCDF return code or convert to MergeError.
 macro_rules! nc_try {
@@ -137,7 +137,7 @@ unsafe fn query_dims(ncid: c_int) -> Result<Vec<(String, usize, bool)>, MergeErr
     Ok(dims)
 }
 
-// ── public entry point ────────────────────────────────────────────────────────
+// public entry point
 
 /// Merge two in-memory NetCDF byte buffers into a third.
 /// All netCDF-C library calls are serialised via `NETCDF_LOCK`.
@@ -152,11 +152,11 @@ pub fn merge(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeError> {
 
 /// Inner merge logic — called with the global lock already held.
 unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeError> {
-    // ── 1. Open both inputs ──────────────────────────────────────────────────
+    // 1. open both inputs
     let ncid_a = open_mem(part_a)?;
     let ncid_b = open_mem(part_b)?;
 
-    // ── 2. Query dimensions from both ────────────────────────────────────────
+    // 2. query dimensions from both
     let dims_a = query_dims(ncid_a)?;
     let dims_b = query_dims(ncid_b)?;
 
@@ -188,7 +188,7 @@ unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeErro
         }
     }
 
-    // ── 3. Create output in memory (netCDF-4) ────────────────────────────────
+    // 3. create output in memory (netCDF-4)
     // nc_create_mem: name is ignored (in-memory), initial size hint 64 KiB.
     let mut ncid_out: c_int = 0;
     let create_mode = (NC_NETCDF4 | NC_CLOBBER) as c_int;
@@ -226,7 +226,7 @@ unsafe fn merge_with_handles(
     ncid_out: c_int,
     dim_vec: &[(String, usize, bool)],
 ) -> Result<Vec<u8>, MergeError> {
-    // ── 4. Define dimensions in output ───────────────────────────────────────
+    // 4. define dimensions in output
     for (name, len, unlim) in dim_vec {
         let c_name = std::ffi::CString::new(name.as_str())
             .map_err(|e| MergeError::Internal(e.to_string()))?;
@@ -235,15 +235,15 @@ unsafe fn merge_with_handles(
         nc_try!(nc_def_dim(ncid_out, c_name.as_ptr(), dim_len, &mut dimid_out));
     }
 
-    // ── 5. Copy global attributes (part_a wins on conflict) ──────────────────
+    // 5. copy global attributes — part_a wins on conflict
     copy_global_attrs(ncid_a, ncid_out)?;
     copy_global_attrs_if_missing(ncid_b, ncid_out)?;
 
-    // ── 6. Copy variables (part_a wins on conflict) ──────────────────────────
+    // 6. copy variables — part_a wins on conflict
     copy_vars(ncid_a, ncid_out)?;
     copy_vars_if_missing(ncid_b, ncid_out)?;
 
-    // ── 7. Close output and extract bytes ────────────────────────────────────
+    // 7. close output and extract bytes
     let mut memio = NC_memio {
         size: 0,
         memory: std::ptr::null_mut(),
@@ -264,7 +264,7 @@ unsafe fn merge_with_handles(
     Ok(bytes)
 }
 
-// ── attribute helpers ─────────────────────────────────────────────────────────
+// attribute helpers
 
 /// Copy every global attribute from `src` into `dst`.
 unsafe fn copy_global_attrs(src: c_int, dst: c_int) -> Result<(), MergeError> {
@@ -297,7 +297,7 @@ unsafe fn copy_global_attrs_if_missing(src: c_int, dst: c_int) -> Result<(), Mer
     Ok(())
 }
 
-// ── variable helpers ──────────────────────────────────────────────────────────
+// variable helpers
 
 /// Copy all variables from `src` into `dst`.
 /// `nc_copy_var` resolves dimension names in `dst` automatically.
@@ -365,7 +365,7 @@ unsafe fn do_copy_var(src: c_int, varid: c_int, dst: c_int) -> c_int {
     nc_copy_var(src, varid, dst) as c_int
 }
 
-// ── test helper ───────────────────────────────────────────────────────────────
+// test helper
 
 /// Creates a minimal in-memory NetCDF-4 file with the given dimensions and
 /// global text attributes.  Intended for testing; **panics** on any netCDF error.
@@ -414,7 +414,7 @@ pub fn make_nc_bytes(dims: &[(&str, usize)], attrs: &[(&str, &str)]) -> Vec<u8> 
     }
 }
 
-// ── unit tests ────────────────────────────────────────────────────────────────
+// unit tests
 
 #[cfg(test)]
 mod tests {
