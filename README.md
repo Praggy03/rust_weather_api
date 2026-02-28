@@ -140,6 +140,7 @@ curl "http://localhost:8000/read?name=mydata" -o merged.nc
 
 | Method | Path | Query | Body | Response |
 |--------|------|-------|------|----------|
+| GET  | `/health` | — | — | `200 ok` |
 | POST | `/part_a` | `name=NAME` | raw NetCDF bytes | `200 OK` |
 | POST | `/part_b` | `name=NAME` | raw NetCDF bytes | `200 OK` |
 | GET  | `/read`   | `name=NAME` | — | `200 OK` + merged NetCDF bytes, or error |

@@ -82,6 +82,12 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for ApiError {
 
 // ── routes ────────────────────────────────────────────────────────────────────
 
+/// GET /health — liveness probe
+#[get("/health")]
+fn health() -> &'static str {
+    "ok"
+}
+
 /// POST /part_a?name=NAME
 #[post("/part_a?<name>", data = "<data>")]
 async fn upload_part_a(
@@ -170,5 +176,5 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 .merge(("limits.bytes", MAX_UPLOAD))
                 .merge(("limits.data-form", MAX_UPLOAD)),
         )
-        .mount("/", routes![upload_part_a, upload_part_b, read])
+        .mount("/", routes![health, upload_part_a, upload_part_b, read])
 }
