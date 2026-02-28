@@ -28,7 +28,8 @@ sudo dnf install netcdf-devel
 cargo run
 ```
 
-The server starts on `http://0.0.0.0:8000` by default.
+The server starts on `http://127.0.0.1:8000` by default (Rocket's own default).
+Set `ROCKET_ADDRESS=0.0.0.0` to listen on all interfaces.
 
 ---
 
@@ -64,6 +65,48 @@ Override at runtime if needed:
 ```bash
 docker run --rm -p 9000:9000 -e ROCKET_PORT=9000 netcdf-merge-server
 ```
+
+---
+
+## Testing
+
+### Unit & integration tests
+
+Requires the netCDF-C development headers on the host machine.
+
+```bash
+# macOS
+brew install netcdf
+
+# Ubuntu / Debian
+sudo apt-get install libnetcdf-dev
+```
+
+```bash
+# Run all tests (single-threaded — required because HDF5 uses global C state)
+cargo test -- --test-threads=1
+```
+
+This runs:
+- **7 unit tests** in `src/netcdf_merge.rs` — merge logic, dimension conflicts, attribute conflicts, invalid input
+- **11 integration tests** in `tests/api_test.rs` — all HTTP routes, status codes, name isolation, overwrite behaviour
+
+### End-to-end tests (Docker)
+
+```bash
+# Build the image, start the container, run all E2E tests, then clean up
+bash scripts/e2e_test.sh
+```
+
+Or manually:
+
+```bash
+docker run --rm -d --name netcdf-test -p 8000:8000 netcdf-merge-server
+python3 scripts/e2e_test.py          # 26 scenarios
+docker rm -f netcdf-test
+```
+
+The E2E suite (`scripts/e2e_test.py`) covers: missing-data 404s, successful uploads and merges, name isolation, invalid-bytes 500, and overwrite behaviour.  It uses Python's standard library only — no third-party packages required.
 
 ---
 
@@ -173,19 +216,19 @@ allocators).  They are not re-entrant.  Calling any `nc_*` function from two
 threads simultaneously — even on different file IDs — can cause heap
 corruption, crashes, or silent data corruption.
 
-The `netcdf-sys` crate exposes `libnetcdf_lock`, a `Mutex<()>` that the Rust
-wrappers use for exactly this purpose.  Our merge code acquires this lock at
-the very start of every merge operation and releases it only when the
-operation is complete (including `nc_close_memio`).
+The `netcdf-sys 0.3` crate does not expose a serialisation lock, so this
+project defines its own `pub static NC_LOCK: std::sync::Mutex<()>` in
+`src/netcdf_merge.rs`.  Every `nc_*` call — in both the server merge path
+and the test helpers — acquires this lock first.
 
 ### Mitigations (implemented and recommended)
 
 | Mitigation | Status | Notes |
 |-----------|--------|-------|
-| `libnetcdf_lock` global mutex | ✅ implemented | Serialises all `nc_*` calls |
+| `NC_LOCK` global mutex | ✅ implemented | Defined in `src/netcdf_merge.rs`; serialises all `nc_*` calls |
 | `spawn_blocking` for merge | ✅ implemented | Keeps Tokio workers free while C code runs |
 | Arc snapshot before releasing RwLock | ✅ implemented | Prevents holding store lock during merge |
-| Per-key lock | 🔲 not implemented | Would allow concurrent merges for different keys; safe only if each merge acquires `libnetcdf_lock` anyway — no throughput gain until netCDF-C itself is thread-safe |
+| Per-key lock | 🔲 not implemented | Would allow concurrent merges for different keys; safe only if each merge still acquires `NC_LOCK` anyway — no throughput gain until netCDF-C itself is thread-safe |
 | Upload size limits (256 MiB) | ✅ implemented | Protects against memory exhaustion |
 | Worker-process isolation / queue | 🔲 best option for production | Spawn one worker process that owns all netCDF I/O; communicate over channels or a local socket.  The worker processes requests sequentially, eliminating all C-library concurrency concerns while the main server remains fully async. |
 
