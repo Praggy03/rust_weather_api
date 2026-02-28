@@ -44,7 +44,6 @@ extern "C" {
 /// race with server-side merges.
 pub static NC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// error type
 
 #[derive(Debug, Error)]
 pub enum MergeError {
@@ -150,18 +149,13 @@ pub fn merge(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeError> {
     unsafe { merge_inner(part_a, part_b) }
 }
 
-/// Inner merge logic — called with the global lock already held.
 unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeError> {
-    // 1. open both inputs
     let ncid_a = open_mem(part_a)?;
     let ncid_b = open_mem(part_b)?;
 
-    // 2. query dimensions from both
     let dims_a = query_dims(ncid_a)?;
     let dims_b = query_dims(ncid_b)?;
 
-    // Build merged dimension list preserving insertion order.
-    // name → (len, is_unlimited).  Conflict = same name, different value → 400.
     let mut dim_vec: Vec<(String, usize, bool)> = Vec::new();
     let mut dim_seen: std::collections::HashMap<String, (usize, bool)> =
         std::collections::HashMap::new();
@@ -188,14 +182,12 @@ unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeErro
         }
     }
 
-    // 3. create output in memory (netCDF-4)
-    // nc_create_mem: name is ignored (in-memory), initial size hint 64 KiB.
     let mut ncid_out: c_int = 0;
     let create_mode = (NC_NETCDF4 | NC_CLOBBER) as c_int;
     let rc = nc_create_mem(
         b"output\0".as_ptr() as *const c_char,
         create_mode,
-        64 * 1024, // initial memory size hint
+        64 * 1024,
         &mut ncid_out,
     );
     if rc != NC_NOERR as c_int {
@@ -204,12 +196,9 @@ unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeErro
         return Err(MergeError::nc(rc));
     }
 
-    // From here all early exits must close ncid_a, ncid_b, ncid_out.
-    // We use a helper closure that returns Result, then clean up after.
     let result = merge_with_handles(ncid_a, ncid_b, ncid_out, &dim_vec);
 
     if result.is_err() {
-        // nc_close_memio was not called — close ncid_out explicitly.
         nc_close(ncid_out);
     }
     nc_close(ncid_a);
@@ -217,16 +206,12 @@ unsafe fn merge_inner(part_a: &[u8], part_b: &[u8]) -> Result<Vec<u8>, MergeErro
     result
 }
 
-/// Does the heavy lifting once all three file handles are open.
-/// On success returns the merged bytes (ncid_out has been closed via nc_close_memio).
-/// On failure returns an error (caller must close ncid_out, ncid_a, ncid_b).
 unsafe fn merge_with_handles(
     ncid_a: c_int,
     ncid_b: c_int,
     ncid_out: c_int,
     dim_vec: &[(String, usize, bool)],
 ) -> Result<Vec<u8>, MergeError> {
-    // 4. define dimensions in output
     for (name, len, unlim) in dim_vec {
         let c_name = std::ffi::CString::new(name.as_str())
             .map_err(|e| MergeError::Internal(e.to_string()))?;
@@ -235,15 +220,12 @@ unsafe fn merge_with_handles(
         nc_try!(nc_def_dim(ncid_out, c_name.as_ptr(), dim_len, &mut dimid_out));
     }
 
-    // 5. copy global attributes — part_a wins on conflict
     copy_global_attrs(ncid_a, ncid_out)?;
     copy_global_attrs_if_missing(ncid_b, ncid_out)?;
 
-    // 6. copy variables — part_a wins on conflict
     copy_vars(ncid_a, ncid_out)?;
     copy_vars_if_missing(ncid_b, ncid_out)?;
 
-    // 7. close output and extract bytes
     let mut memio = NC_memio {
         size: 0,
         memory: std::ptr::null_mut(),
@@ -251,7 +233,6 @@ unsafe fn merge_with_handles(
     };
     nc_try!(nc_close_memio(ncid_out, &mut memio));
 
-    // The caller owns the buffer after nc_close_memio; always free with libc::free.
     let bytes = if memio.memory.is_null() || memio.size == 0 {
         Vec::new()
     } else {
@@ -264,9 +245,6 @@ unsafe fn merge_with_handles(
     Ok(bytes)
 }
 
-// attribute helpers
-
-/// Copy every global attribute from `src` into `dst`.
 unsafe fn copy_global_attrs(src: c_int, dst: c_int) -> Result<(), MergeError> {
     let mut natts: c_int = 0;
     nc_try!(nc_inq_natts(src, &mut natts));
@@ -278,29 +256,21 @@ unsafe fn copy_global_attrs(src: c_int, dst: c_int) -> Result<(), MergeError> {
     Ok(())
 }
 
-/// Copy global attributes from `src` into `dst` only if they don't exist yet.
 unsafe fn copy_global_attrs_if_missing(src: c_int, dst: c_int) -> Result<(), MergeError> {
     let mut natts: c_int = 0;
     nc_try!(nc_inq_natts(src, &mut natts));
     for i in 0..natts {
         let mut name_buf: [c_char; NC_MAX_NAME as usize + 1] = [0; NC_MAX_NAME as usize + 1];
         nc_try!(nc_inq_attname(src, NC_GLOBAL, i, name_buf.as_mut_ptr()));
-        // Check whether already present in dst
         let mut attid: c_int = 0;
         let rc = nc_inq_attid(dst, NC_GLOBAL, name_buf.as_ptr(), &mut attid);
         if rc == NC_ENOTATT as c_int {
             nc_try!(nc_copy_att(src, NC_GLOBAL, name_buf.as_ptr(), dst, NC_GLOBAL));
         }
-        // If rc == NC_NOERR the attribute already exists (from part_a) — skip.
-        // Any other error is ignored for attributes (non-fatal).
     }
     Ok(())
 }
 
-// variable helpers
-
-/// Copy all variables from `src` into `dst`.
-/// `nc_copy_var` resolves dimension names in `dst` automatically.
 unsafe fn copy_vars(src: c_int, dst: c_int) -> Result<(), MergeError> {
     let mut nvars: c_int = 0;
     let mut d0: c_int = 0;
@@ -326,7 +296,6 @@ unsafe fn copy_vars(src: c_int, dst: c_int) -> Result<(), MergeError> {
     Ok(())
 }
 
-/// Copy variables from `src` into `dst` only if they don't exist yet.
 unsafe fn copy_vars_if_missing(src: c_int, dst: c_int) -> Result<(), MergeError> {
     let mut nvars: c_int = 0;
     let mut d0: c_int = 0;
@@ -341,11 +310,10 @@ unsafe fn copy_vars_if_missing(src: c_int, dst: c_int) -> Result<(), MergeError>
             .to_string_lossy()
             .into_owned();
 
-        // Check if already present in output (part_a wins)
         let mut out_varid: c_int = 0;
         let check = nc_inq_varid(dst, name_buf.as_ptr(), &mut out_varid);
         if check == NC_NOERR as c_int {
-            continue; // already present from part_a
+            continue;
         }
 
         let rc = do_copy_var(src, varid, dst);
@@ -359,19 +327,10 @@ unsafe fn copy_vars_if_missing(src: c_int, dst: c_int) -> Result<(), MergeError>
     Ok(())
 }
 
-/// Call `nc_copy_var` and return the raw return code (caller handles errors).
-/// `nc_copy_var` resolves dimension names internally in the target file.
 unsafe fn do_copy_var(src: c_int, varid: c_int, dst: c_int) -> c_int {
     nc_copy_var(src, varid, dst) as c_int
 }
 
-// test helper
-
-/// Creates a minimal in-memory NetCDF-4 file with the given dimensions and
-/// global text attributes.  Intended for testing; **panics** on any netCDF error.
-///
-/// * `dims`  — `(name, length)` pairs; all are fixed (non-unlimited).
-/// * `attrs` — `(name, value)` global text attributes.
 pub fn make_nc_bytes(dims: &[(&str, usize)], attrs: &[(&str, &str)]) -> Vec<u8> {
     let _guard = NC_LOCK.lock().expect("NC_LOCK poisoned");
     unsafe {
@@ -414,7 +373,6 @@ pub fn make_nc_bytes(dims: &[(&str, usize)], attrs: &[(&str, &str)]) -> Vec<u8> 
     }
 }
 
-// unit tests
 
 #[cfg(test)]
 mod tests {
@@ -445,7 +403,6 @@ mod tests {
         let b = make_nc_bytes(&[], &[("title", "from_b")]);
         let merged = merge(&a, &b).expect("merge with conflicting attr should succeed");
 
-        // Re-open the merged file and read the attribute value.
         let _guard = NC_LOCK.lock().unwrap();
         unsafe {
             let mut ncid: i32 = 0;
@@ -468,7 +425,6 @@ mod tests {
 
     #[test]
     fn same_dim_same_length_succeeds() {
-        // Same name + same length → no conflict; dimension deduped in output.
         let a = make_nc_bytes(&[("time", 10)], &[]);
         let b = make_nc_bytes(&[("time", 10)], &[]);
         let out = merge(&a, &b).expect("identical dim should succeed");
@@ -478,7 +434,7 @@ mod tests {
     #[test]
     fn dim_length_conflict_returns_error() {
         let a = make_nc_bytes(&[("x", 3)], &[]);
-        let b = make_nc_bytes(&[("x", 5)], &[]); // same name, different length
+        let b = make_nc_bytes(&[("x", 5)], &[]);
         let err = merge(&a, &b).expect_err("dim conflict should fail");
         assert!(matches!(err, MergeError::DimConflict { .. }), "got: {err}");
     }
