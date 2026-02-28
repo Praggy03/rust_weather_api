@@ -1,4 +1,4 @@
-# rust_weather_api — In-Memory NetCDF Merge Server
+# In-Memory NetCDF Merge Server
 
 A Rocket HTTP server that accepts two NetCDF files, merges them entirely in
 memory (no disk I/O at any point), and returns the merged file.
@@ -42,9 +42,11 @@ docker run --rm -p 8000:8000 netcdf-merge-server
 
 ```bash
 # unit + integration (single-threaded required — HDF5 uses global C state)
+# requires: brew install netcdf  OR  apt-get install libnetcdf-dev
 cargo test -- --test-threads=1
 
-# E2E against a live container
+# E2E against a live container (build the image first if you haven't)
+docker build -t netcdf-merge-server .
 docker run --rm -d --name netcdf-test -p 8000:8000 netcdf-merge-server
 python3 scripts/e2e_test.py
 docker rm -f netcdf-test
@@ -102,14 +104,14 @@ All merge I/O goes through `nc_open_mem` / `nc_create_mem` / `nc_close_memio`
 
 There are two separate problems here.
 
-**Store races.** The in-memory store is a `RwLock<HashMap>`. Because part_a
+**Store races** - The in-memory store is a `RwLock<HashMap>`. Because part_a
 and part_b arrive as separate requests, a `/read` between them will 404 —
 that's expected. The subtler issue is holding the lock during a slow merge.
 The `/read` handler solves this by cloning two `Arc` pointers under a brief
 read lock and then dropping it immediately, so the actual merge runs lock-free
 and writers are never blocked.
 
-**netCDF-C / HDF5 thread safety.** The netCDF-C library uses global C state
+**netCDF-C / HDF5 thread safety** - The netCDF-C library uses global C state
 (file ID tables, internal allocators) and is not re-entrant. Calling any
 `nc_*` function from two threads simultaneously — even on different file IDs —
 can corrupt memory. This project serialises all `nc_*` calls through a single
