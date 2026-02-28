@@ -1,0 +1,18 @@
+[package]
+name = "rust_weather_api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocket = { version = "0.5", features = ["json"] }
+netcdf-sys = "0.3"
+libc = "0.2"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+netcdf-sys = "0.3"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
