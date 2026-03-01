@@ -46,6 +46,7 @@ docker run --rm -p 8000:8000 netcdf-merge-server
 cargo test -- --test-threads=1
 
 # E2E against a live container (build the image first if you haven't)
+# pip3 install netCDF4 unlocks tests 9 & 10 (real variables + conflict resolution)
 docker build -t netcdf-merge-server .
 docker run --rm -d --name netcdf-test -p 8000:8000 netcdf-merge-server
 python3 scripts/e2e_test.py
