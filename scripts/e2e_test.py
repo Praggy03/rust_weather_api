@@ -7,12 +7,14 @@ Usage:
 
     # base_url defaults to http://localhost:8000 or the BASE_URL env var.
 
-No external Python packages required — stdlib only.
+No external Python packages required for the core tests.
+Test 9 (real variables) additionally requires: pip install netCDF4
 """
 
 import os
 import sys
 import time
+import tempfile
 import urllib.request
 import urllib.error
 
@@ -56,6 +58,49 @@ def get(path: str):
         return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+def nc_bytes(variables: dict, attributes: dict) -> bytes:
+    """Build a real NetCDF-4 file in a temp file and return its bytes.
+    variables  — {name: (dim_size, [values])}
+    attributes — {name: value}
+    Requires netCDF4 + numpy.
+    """
+    import netCDF4 as nc
+    import numpy as np
+    tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+    tmp.close()
+    ds = nc.Dataset(tmp.name, "w", format="NETCDF4")
+    for attr_name, attr_val in attributes.items():
+        setattr(ds, attr_name, attr_val)
+    dim_sizes = {}
+    for var_name, (dim_size, values) in variables.items():
+        dim_name = f"dim_{var_name}"
+        if dim_size not in dim_sizes:
+            ds.createDimension(dim_name, dim_size)
+            dim_sizes[dim_size] = dim_name
+        v = ds.createVariable(var_name, "f4", (dim_sizes[dim_size],))
+        v[:] = np.array(values)
+    ds.close()
+    data = open(tmp.name, "rb").read()
+    os.unlink(tmp.name)
+    return data
+
+
+def inspect_merged(data: bytes) -> dict:
+    """Open merged bytes, return {attrs: {}, vars: {name: [values]}}."""
+    import netCDF4 as nc
+    tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+    tmp.write(data)
+    tmp.close()
+    ds = nc.Dataset(tmp.name, "r")
+    result = {
+        "attrs": {a: getattr(ds, a) for a in ds.ncattrs()},
+        "vars":  {v: ds.variables[v][:].tolist() for v in ds.variables},
+    }
+    ds.close()
+    os.unlink(tmp.name)
+    return result
 
 
 # ── minimal valid NetCDF-3 Classic file (32 bytes) ────────────────────────────
@@ -137,6 +182,60 @@ check("POST /part_a fix → 200",   post("/part_a?name=ow", EMPTY_NC3), 200)
 s_ok, body_ok = get("/read?name=ow")
 check("GET /read (fixed) → 200",  s_ok, 200)
 check("fixed result is HDF5",     body_ok[:4], b"\x89HDF")
+
+# ── 9. real variables + attributes (requires netCDF4) ────────────────────────
+print("\n── 9. Real variables & attributes ──")
+try:
+    part_a = nc_bytes(
+        variables={"temperature": (5, [22.1, 23.5, 25.0, 26.3, 24.8])},
+        attributes={"max_temp": "35.0 C"},
+    )
+    part_b = nc_bytes(
+        variables={"humidity": (5, [60.0, 62.5, 65.0, 67.2, 63.1])},
+        attributes={"avg_humidity": "65 %"},
+    )
+    check("POST /part_a (temperature) → 200", post("/part_a?name=real", part_a), 200)
+    check("POST /part_b (humidity)    → 200", post("/part_b?name=real", part_b), 200)
+    status, body = get("/read?name=real")
+    check("GET /read → 200", status, 200)
+    if status == 200:
+        merged = inspect_merged(body)
+        check("merged has 'temperature' variable", "temperature" in merged["vars"], True)
+        check("merged has 'humidity' variable",    "humidity"    in merged["vars"], True)
+        check("merged has 'max_temp' attribute",   "max_temp"    in merged["attrs"], True)
+        check("merged has 'avg_humidity' attribute", "avg_humidity" in merged["attrs"], True)
+        print(f"  INFO  temperature = {[round(v,1) for v in merged['vars']['temperature']]}")
+        print(f"  INFO  humidity    = {[round(v,1) for v in merged['vars']['humidity']]}")
+except ImportError:
+    print("  SKIP  netCDF4 not installed (pip install netCDF4 to enable this test)")
+
+# ── 10. conflict resolution — part_a wins ────────────────────────────────────
+print("\n── 10. Conflict resolution (part_a wins) ──")
+try:
+    # Both files have a 'temperature' variable and a 'source' attribute.
+    # part_a's versions should survive in the merged output.
+    conflict_a = nc_bytes(
+        variables={"temperature": (3, [10.0, 20.0, 30.0])},
+        attributes={"source": "part_a"},
+    )
+    conflict_b = nc_bytes(
+        variables={"temperature": (3, [99.0, 99.0, 99.0])},
+        attributes={"source": "part_b"},
+    )
+    check("POST /part_a (temp=[10,20,30], source=part_a) → 200", post("/part_a?name=conflict", conflict_a), 200)
+    check("POST /part_b (temp=[99,99,99], source=part_b) → 200", post("/part_b?name=conflict", conflict_b), 200)
+    status, body = get("/read?name=conflict")
+    check("GET /read → 200", status, 200)
+    if status == 200:
+        merged = inspect_merged(body)
+        temp_vals = [round(v) for v in merged["vars"]["temperature"]]
+        source_val = merged["attrs"].get("source", "")
+        check("temperature values are from part_a [10,20,30]", temp_vals, [10, 20, 30])
+        check("source attribute is from part_a",               source_val, "part_a")
+        print(f"  INFO  temperature = {temp_vals}  (part_b had [99, 99, 99])")
+        print(f"  INFO  source      = '{source_val}'  (part_b had 'part_b')")
+except ImportError:
+    print("  SKIP  netCDF4 not installed (pip install netCDF4 to enable this test)")
 
 # ── summary ───────────────────────────────────────────────────────────────────
 print(f"\n{'─' * 50}")
